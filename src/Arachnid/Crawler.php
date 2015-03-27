@@ -92,25 +92,35 @@ class Crawler
      * Crawl single URL
      * @param string $url
      * @param int    $depth
+     * @param int    $count
      */
-    protected function traverseSingle($url, $depth,$count)
+    protected function traverseSingle($url, $depth, $count)
     {
         try {
             $client = new Client();
-            $client->followRedirects();
-
+            $client->followRedirects(true);
             $crawler = $client->request('GET', $url);
             $statusCode = $client->getResponse()->getStatus();
+          //  $statusCode =
 
-            //$hash = $this->getPathFromUrl($url);
+
+        //    var_dump($client->getResponse()->getContent());
+
             $hash = $this->rel2abs($url,$this->baseUrl);
+
+
+            $this->links[$hash]['depth'] = $this->getDepth($hash);
             $this->links[$hash]['status_code'] = $statusCode;
-            $this->links[$hash]['depth'] = $depth;
+
+
+          //  var_dump($statusCode);
+
 
             if ($statusCode === 200) {
 
 
                 $this->extractTitleInfo($crawler, $hash);
+
 
 
                 $childLinks = array();
@@ -125,11 +135,28 @@ class Crawler
             $this->links[$url]['status_code'] = '404';
             $this->links[$url]['error_code'] = $e->getCode();
             $this->links[$url]['error_message'] = $e->getMessage();
+            $this->links[$url]['error_line'] = $e->getLine();
+            $this->links[$url]['error_file'] = $e->getFile();
         } catch (\Exception $e) {
             $this->links[$url]['status_code'] = '404';
             $this->links[$url]['error_code'] = $e->getCode();
             $this->links[$url]['error_message'] = $e->getMessage();
+            $this->links[$url]['error_line'] = $e->getLine();
+            $this->links[$url]['error_file'] = $e->getFile();
         }
+    }
+
+
+    protected function getDepth($url){
+        $parsedUrl = parse_url($url);
+
+        if(!isset($parsedUrl['path'])){
+            return 0;
+        }
+
+        $path = explode('/',$parsedUrl['path']);
+
+        return count(array_filter($path));
     }
 
     /**
@@ -158,7 +185,7 @@ class Crawler
                 break;
             }
 
-           // $hash = $this->getPathFromUrl($url);
+          //  $hash = $this->getPathFromUrl($url);
             $hash = $this->rel2abs($url,$this->baseUrl);
 
             if (isset($this->links[$hash]) === false) {
@@ -175,7 +202,10 @@ class Crawler
             if (isset($this->links[$hash]['visited']) === false) {
                 $this->links[$hash]['visited'] = false;
             }
-            $this->links[$hash]['depth'] = $depth;
+
+
+
+            $this->links[$hash]['depth'] = $this->getDepth($hash);
 
             if (empty($url) === false && $this->links[$hash]['visited'] === false && isset($this->links[$hash]['dont_visit']) === false) {
                 $this->traverseSingle($this->normalizeLink($childLinks[$url]['absolute_url']), $depth,$count);
@@ -226,8 +256,7 @@ class Crawler
                             $childLinks[$hash]['visited'] = false;
                             $childLinks[$hash]['frequency'] = isset($childLinks[$hash]['frequency']) ? $childLinks[$hash]['frequency'] + 1 : 1;
                         } else {
-                            $childLinks[$hash]['dont_visit'] = true;
-                            $childLinks[$hash]['external_link'] = false;
+                            unset($childLinks[$hash]);
                         }
                     }
                 });
@@ -248,15 +277,19 @@ class Crawler
     protected function extractTitleInfo(\Symfony\Component\DomCrawler\Crawler $crawler, $url)
     {
 
-
         $this->links[$url]['title'] = trim($crawler->filterXPath('html/head/title')->text());
         $this->links[$url]['body_length'] = strip_tags(strlen(trim($crawler->filterXPath('html/body')->text())));
-        $this->links[$url]['description'] = trim($crawler->filterXpath('//meta[@name="description"]')->attr('content'));
+
+        try{
+            $this->links[$url]['description'] = trim($crawler->filterXpath('//meta[@name="description"]')->attr('content'));
+        }catch (\Exception $e){
+            $this->links[$url]['description'] = '';
+        }
 
         try{
             $this->links[$url]['h1'] = $crawler->filter('h1')->first()->text();
         }catch (\Exception $e){
-            $this->links[$url]['h1'] = '0';
+            $this->links[$url]['h1'] = '';
         }
 
 
@@ -277,6 +310,7 @@ class Crawler
             '@^javascript\:.*$@i',
             '@^#.*@',
             '@^mailto\:.*@i',
+            '@^irc\:.*@i',
         );
 
         foreach ($stop_links as $ptrn) {
@@ -335,7 +369,11 @@ class Crawler
 
         /* parse base URL and convert to local variables:
            $scheme, $host, $path */
+        $path = '';
         extract(parse_url($base));
+
+
+
 
         /* remove non-directory element from path */
         $path = preg_replace('#/[^/]*$#', '', $path);
