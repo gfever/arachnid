@@ -1,5 +1,5 @@
 {
-    "name": "codeguy/arachnid",
+    "name": "gfever/arachnid",
     "type": "library",
     "description": "A crawler to find all unique internal pages on a given website",
     "keywords": ["crawl","spider","search","scrape"],
