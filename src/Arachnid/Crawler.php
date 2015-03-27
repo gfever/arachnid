@@ -3,8 +3,6 @@
 namespace Arachnid;
 
 use Goutte\Client;
-use Guzzle\Http\Exception\CurlException;
-use Symfony\Component\DomCrawler\Crawler as DomCrawler;
 
 /**
  * Crawler
@@ -39,6 +37,8 @@ class Crawler
      */
     protected $maxDepth;
 
+    protected $maxCount;
+
     /**
      * Array of links (and related data) found by the crawler
      * @var array
@@ -50,10 +50,11 @@ class Crawler
      * @param string $baseUrl
      * @param int    $maxDepth
      */
-    public function __construct($baseUrl, $maxDepth = 3)
+    public function __construct($baseUrl, $maxDepth = 3, $maxCount = 100)
     {
         $this->baseUrl = $baseUrl;
         $this->maxDepth = $maxDepth;
+        $this->maxCount = $maxCount;
         $this->links = array();
     }
 
@@ -75,7 +76,7 @@ class Crawler
             );
         }
 
-        $this->traverseSingle($url, $this->maxDepth);
+        $this->traverseSingle($url, $this->maxDepth,$this->maxCount);
     }
 
     /**
@@ -92,7 +93,7 @@ class Crawler
      * @param string $url
      * @param int    $depth
      */
-    protected function traverseSingle($url, $depth)
+    protected function traverseSingle($url, $depth,$count)
     {
         try {
             $client = new Client();
@@ -101,25 +102,26 @@ class Crawler
             $crawler = $client->request('GET', $url);
             $statusCode = $client->getResponse()->getStatus();
 
-            $hash = $this->getPathFromUrl($url);
+            //$hash = $this->getPathFromUrl($url);
+            $hash = $this->rel2abs($url,$this->baseUrl);
             $this->links[$hash]['status_code'] = $statusCode;
+            $this->links[$hash]['depth'] = $depth;
 
             if ($statusCode === 200) {
-                $content_type = $client->getResponse()->getHeader('Content-Type');
 
-                if (strpos($content_type, 'text/html') !== false) { //traverse children in case the response in HTML document only
-                    $this->extractTitleInfo($crawler, $hash);
 
-                    $childLinks = array();
-                    if (isset($this->links[$hash]['external_link']) === true && $this->links[$hash]['external_link'] === false) {
-                        $childLinks = $this->extractLinksInfo($crawler, $hash);
-                    }
+                $this->extractTitleInfo($crawler, $hash);
 
-                    $this->links[$hash]['visited'] = true;
-                    $this->traverseChildren($childLinks, $depth - 1);
+
+                $childLinks = array();
+                if (isset($this->links[$hash]['external_link']) === true && $this->links[$hash]['external_link'] === false) {
+                    $childLinks = $this->extractLinksInfo($crawler, $hash);
                 }
+
+                $this->links[$hash]['visited'] = true;
+                $this->traverseChildren($childLinks, $depth - 1,$count);
             }
-        } catch (CurlException $e) {
+        } catch (\Guzzle\Http\Exception\CurlException $e) {
             $this->links[$url]['status_code'] = '404';
             $this->links[$url]['error_code'] = $e->getCode();
             $this->links[$url]['error_message'] = $e->getMessage();
@@ -135,14 +137,29 @@ class Crawler
      * @param array $childLinks
      * @param int   $depth
      */
-    protected function traverseChildren($childLinks, $depth)
+    protected function traverseChildren($childLinks, $depth, $count)
     {
+
+
         if ($depth === 0) {
             return;
         }
 
         foreach ($childLinks as $url => $info) {
-            $hash = $this->getPathFromUrl($url);
+
+            if($info['external_link']){
+                continue;
+            }
+            if(!$url){
+                continue;
+            }
+
+            if(count($this->links)>=$count){
+                break;
+            }
+
+           // $hash = $this->getPathFromUrl($url);
+            $hash = $this->rel2abs($url,$this->baseUrl);
 
             if (isset($this->links[$hash]) === false) {
                 $this->links[$hash] = $info;
@@ -158,9 +175,10 @@ class Crawler
             if (isset($this->links[$hash]['visited']) === false) {
                 $this->links[$hash]['visited'] = false;
             }
+            $this->links[$hash]['depth'] = $depth;
 
             if (empty($url) === false && $this->links[$hash]['visited'] === false && isset($this->links[$hash]['dont_visit']) === false) {
-                $this->traverseSingle($this->normalizeLink($childLinks[$url]['absolute_url']), $depth);
+                $this->traverseSingle($this->normalizeLink($childLinks[$url]['absolute_url']), $depth,$count);
             }
         }
     }
@@ -171,10 +189,10 @@ class Crawler
      * @param  string                                $url
      * @return array
      */
-    protected function extractLinksInfo(DomCrawler $crawler, $url)
+    protected function extractLinksInfo(\Symfony\Component\DomCrawler\Crawler $crawler, $url)
     {
         $childLinks = array();
-        $crawler->filter('a')->each(function (DomCrawler $node, $i) use (&$childLinks) {
+        $crawler->filter('a')->each(function (\Symfony\Component\DomCrawler\Crawler $node, $i) use (&$childLinks) {
                     $node_text = trim($node->text());
                     $node_url = $node->attr('href');
                     $node_url_is_crawlable = $this->checkIfCrawlable($node_url);
@@ -201,6 +219,9 @@ class Crawler
                             // Is this an external URL?
                             $childLinks[$hash]['external_link'] = $this->checkIfExternal($childLinks[$hash]['absolute_url']);
 
+
+
+
                             // Additional metadata
                             $childLinks[$hash]['visited'] = false;
                             $childLinks[$hash]['frequency'] = isset($childLinks[$hash]['frequency']) ? $childLinks[$hash]['frequency'] + 1 : 1;
@@ -224,19 +245,21 @@ class Crawler
      * @param \Symfony\Component\DomCrawler\Crawler $crawler
      * @param string                                $url
      */
-    protected function extractTitleInfo(DomCrawler $crawler, $url)
+    protected function extractTitleInfo(\Symfony\Component\DomCrawler\Crawler $crawler, $url)
     {
+
+
         $this->links[$url]['title'] = trim($crawler->filterXPath('html/head/title')->text());
+        $this->links[$url]['body_length'] = strip_tags(strlen(trim($crawler->filterXPath('html/body')->text())));
+        $this->links[$url]['description'] = trim($crawler->filterXpath('//meta[@name="description"]')->attr('content'));
 
-        $h1_count = $crawler->filter('h1')->count();
-        $this->links[$url]['h1_count'] = $h1_count;
-        $this->links[$url]['h1_contents'] = array();
-
-        if ($h1_count > 0) {
-            $crawler->filter('h1')->each(function (DomCrawler $node, $i) use ($url) {
-                        $this->links[$url]['h1_contents'][$i] = trim($node->text());
-                    });
+        try{
+            $this->links[$url]['h1'] = $crawler->filter('h1')->first()->text();
+        }catch (\Exception $e){
+            $this->links[$url]['h1'] = '0';
         }
+
+
     }
 
     /**
@@ -299,6 +322,36 @@ class Crawler
         } else {
             return $url;
         }
+    }
+
+
+    protected function rel2abs($rel, $base)
+    {
+        /* return if already absolute URL */
+        if (parse_url($rel, PHP_URL_SCHEME) != '') return $rel;
+
+        /* queries and anchors */
+        if ($rel[0]=='#' || $rel[0]=='?') return $base.$rel;
+
+        /* parse base URL and convert to local variables:
+           $scheme, $host, $path */
+        extract(parse_url($base));
+
+        /* remove non-directory element from path */
+        $path = preg_replace('#/[^/]*$#', '', $path);
+
+        /* destroy path if relative url points to root */
+        if ($rel[0] == '/') $path = '';
+
+        /* dirty absolute URL */
+        $abs = "$host$path/$rel";
+
+        /* replace '//' or '/./' or '/foo/../' with '/' */
+        $re = array('#(/\.?/)#', '#/(?!\.\.)[^/]+/\.\./#');
+        for($n=1; $n>0; $abs=preg_replace($re, '/', $abs, -1, $n)) {}
+
+        /* absolute URL is ready! */
+        return $scheme.'://'.$abs;
     }
 
 }
